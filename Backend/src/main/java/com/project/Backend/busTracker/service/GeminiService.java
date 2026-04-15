@@ -3,16 +3,22 @@ package com.project.Backend.busTracker.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.project.Backend.busTracker.model.BusLocation;
+import com.project.Backend.busTracker.model.RouteStop;
 import com.project.Backend.busTracker.model.StopEta;
+import com.project.Backend.busTracker.repository.RouteStopRepository;
+import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+@RequiredArgsConstructor
 @Service
 public class GeminiService {
 
@@ -21,21 +27,47 @@ public class GeminiService {
 
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final RouteStopRepository routeStopRepository;
 
-    public List<StopEta> estimateETAs(BusLocation bus, List<String> stops, List<Double> distances) {
+    public List<StopEta> estimateETAs(BusLocation bus) {
 
-        // ✅ 1. Base ETA calculation (deterministic)
-        List<StopEta> baseEtas = calculateBaseEta(bus, stops, distances);
+        List<RouteStop> routeStops = routeStopRepository
+                .findByRouteIdOrderByStopOrder(bus.getRouteId());
 
-        // ✅ 2. Build prompt with context
+        List<StopEta> baseEtas = routeStops.stream()
+                .map(stop -> {
+                    double km = haversine(
+                            bus.getLat(),
+                            bus.getLng(),
+                            stop.getLat(),
+                            stop.getLng()
+                    );
+
+                    int etaMin = (int) Math.ceil(
+                            (km / Math.max(bus.getSpeedKmh(), 10)) * 60
+                    );
+
+                    LocalDateTime arrival = LocalDateTime.now().plusMinutes(etaMin);
+
+                    StopEta eta = new StopEta();
+                    eta.setStop(stop.getStopName());
+                    eta.setKm(Math.round(km * 100.0) / 100.0);
+                    eta.setEtaMin(etaMin);
+                    eta.setArrivalTime(
+                            arrival.format(DateTimeFormatter.ofPattern("hh:mm a"))
+                    );
+
+                    return eta;
+                })
+                .sorted(Comparator.comparingInt(StopEta::getEtaMin))
+                .toList();
+
         String prompt = buildPrompt(bus, baseEtas);
 
-        // ✅ 3. Call Gemini to refine ETA
         try {
             String aiResponse = callGemini(prompt);
             return parseResponse(aiResponse);
         } catch (Exception e) {
-            // ✅ 4. Fallback to base ETA if AI fails
             return baseEtas;
         }
     }
@@ -57,6 +89,22 @@ public class GeminiService {
                     return stopEta;
                 })
                 .collect(Collectors.toList());
+    }
+
+    private double haversine(double lat1, double lon1, double lat2, double lon2) {
+        final double R = 6371;
+
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1))
+                * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+
+        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+        return R * c;
     }
 
     // 🧠 Build smarter prompt
