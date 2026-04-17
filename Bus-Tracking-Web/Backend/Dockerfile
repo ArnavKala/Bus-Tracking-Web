@@ -13,11 +13,14 @@ RUN mvn clean package -DskipTests
 FROM eclipse-temurin:25-jre
 WORKDIR /app
 
-# Copy the built jar file
-COPY --from=build /app/target/*.jar app.jar
+# 3. Create a non-root user for security
+RUN addgroup --system javauser && adduser --system --ingroup javauser javauser
+USER javauser
 
-# Expose port 8080 for web traffic
+# 4. Use a specific name if possible, or ensure only one jar is copied
+# If your artifactId is "my-app", the file is usually target/my-app-1.0.0.jar
+# COPY --from=build /app/target/*.jar app.jar
+
 EXPOSE 8080
 
-# Command to run the application
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["java", "-jar", ".\target\Backend-0.0.1-SNAPSHOT.jar"]
