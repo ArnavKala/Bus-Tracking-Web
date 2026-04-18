@@ -101,6 +101,8 @@ export default function StudentMap() {
     if (!routeObj || !routeObj.stops) return;
 
     try {
+      const thresholdKm = 0.2; // 200 meters to consider a stop "reached"
+
       const promises = routeObj.stops.map(async (stop) => {
         try {
           const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${bus.lng},${bus.lat};${stop.lng},${stop.lat}?overview=false`);
@@ -108,19 +110,50 @@ export default function StudentMap() {
           if (data.code !== 'Ok') throw new Error("OSRM routing failed");
           const routeRes = data.routes[0];
           
-          const km = (routeRes.distance / 1000).toFixed(1);
+          const km = parseFloat((routeRes.distance / 1000).toFixed(2));
           const etaMin = Math.round(routeRes.duration / 60);
           const arrivalTime = new Date(Date.now() + etaMin * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
           return { stop: stop.stopName, km, etaMin, arrivalTime };
         } catch(e) {
-           return { stop: stop.stopName, km: "--", etaMin: "--", arrivalTime: "Unknown" };
+           return { stop: stop.stopName, km: 999, etaMin: "--", arrivalTime: "Unknown" };
         }
       });
       
       const newEtaData = await Promise.all(promises);
-      setEtaData(newEtaData);
-      setActiveSidebarBus(bus);
+
+      // --- LOGIC TO FIND THE ACTIVE POSITION IN THE SIDEBAR ---
+      let nearestIdx = 0;
+      let minDist = 999;
+      newEtaData.forEach((eta, i) => {
+        if (eta.km < minDist) {
+          minDist = eta.km;
+          nearestIdx = i;
+        }
+      });
+
+      let nextStopIdx = nearestIdx;
+      let isAtStop = minDist < thresholdKm;
+
+      if (!isAtStop) {
+        // Decide if we are BEFORE or AFTER the nearest stop
+        if (nearestIdx < newEtaData.length - 1) {
+          const nextDist = newEtaData[nearestIdx + 1].km;
+          const prevDist = nearestIdx > 0 ? newEtaData[nearestIdx - 1].km : 999;
+          
+          // If the next stop is closer than the previous stop, we have likely passed the nearest one
+          if (nextDist < prevDist) {
+             nextStopIdx = nearestIdx + 1;
+          }
+        }
+      }
+
+      setEtaData(newEtaData.map((eta, i) => ({
+        ...eta,
+        isReached: i < nextStopIdx || (i === nextStopIdx && isAtStop)
+      })));
+
+      setActiveSidebarBus({ ...bus, nextStopIdx, isAtStop });
       setSidebarOpen(true);
     } catch (err) {
       console.error("Failed to fetch ETAs:", err);
@@ -136,7 +169,7 @@ export default function StudentMap() {
         fetchLiveETAs(liveBus);
       }
     }
-  }, [buses]);
+  }, [buses, sidebarOpen]);
 
   if (loading) return <div style={styles.loader}>Initializing Multi-Bus Maps...</div>;
 
@@ -231,29 +264,75 @@ export default function StudentMap() {
             </p>
 
             <div style={styles.timeline}>
-              <div style={styles.timelineItem}>
-                <div style={{...styles.timelineDot, background: "#10b981", borderColor: "#10b981"}}></div>
-                <div style={styles.timelineLine}></div>
-                <div style={styles.timelineContent}>
-                  <strong style={{ color: "#10b981" }}>Current position</strong>
-                  <div style={{ marginTop: "4px" }}><span style={{...styles.badge, borderColor: "#10b981", color: "#10b981", background: "transparent"}}>En route</span></div>
-                </div>
-              </div>
+              {etaData.map((eta, i) => {
+                const isNext = i === activeSidebarBus.nextStopIdx;
+                const isAtStop = isNext && activeSidebarBus.isAtStop;
+                const isReached = i < activeSidebarBus.nextStopIdx || (isNext && isAtStop);
+                
+                return (
+                  <React.Fragment key={i}>
+                    {/* EN-ROUTE INDICATOR: Only show between stops, NOT when at a stop */}
+                    {isNext && !isAtStop && (
+                      <div style={styles.timelineItem}>
+                        <div style={{...styles.timelineDot, background: "#10b981", borderColor: "#10b981", boxShadow: "0 0 12px #10b981" }}></div>
+                        <div style={styles.timelineLine}></div>
+                        <div style={styles.timelineContent}>
+                          <strong style={{ color: "#10b981", fontSize: "13px" }}>🚌 En route...</strong>
+                          <div style={{ marginTop: "4px" }}>
+                            <span style={{...styles.badge, borderColor: "#16a34a", color: "#16a34a", background: "rgba(22, 163, 74, 0.1)"}}>Moving to {eta.stop}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
-              {etaData.map((eta, i) => (
-                <div style={styles.timelineItem} key={i}>
-                  <div style={styles.timelineDot}></div>
-                  {i !== etaData.length - 1 && <div style={styles.timelineLine}></div>}
-                  <div style={styles.timelineContent}>
-                    <strong style={{ color: "white", letterSpacing: "0.5px" }}>{eta.stop}</strong>
-                    <div style={{ display: "flex", gap: "8px", marginTop: "6px", alignItems: "center", flexWrap: "wrap" }}>
-                      <span style={{...styles.badge, borderColor: "#3b82f6", color: "#60a5fa", background: "rgba(59, 130, 246, 0.1)"}}>~{eta.etaMin} min</span>
-                      <span style={styles.statBox}>{eta.arrivalTime}</span>
-                      <span style={styles.statBox}>{eta.km} km</span>
+                    <div style={styles.timelineItem}>
+                      <div style={{
+                        ...styles.timelineDot, 
+                        background: isReached ? "#10b981" : "#1f2937", 
+                        borderColor: isReached ? "#10b981" : "#3b82f6",
+                        width: isAtStop ? "16px" : "12px",
+                        height: isAtStop ? "16px" : "12px",
+                        left: isAtStop ? "-2px" : "0",
+                        boxShadow: isAtStop ? "0 0 15px #10b981" : "none"
+                      }}></div>
+                      {i !== etaData.length - 1 && <div style={{...styles.timelineLine, background: isReached ? "#10b981" : "#374151"}}></div>}
+                      
+                      <div style={styles.timelineContent}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <strong style={{ 
+                            color: isReached ? "#10b981" : "white", 
+                            letterSpacing: "0.5px",
+                            opacity: (isReached && !isAtStop) ? 0.7 : 1,
+                            fontSize: isAtStop ? "16px" : "14px"
+                          }}>
+                            {eta.stop}
+                          </strong>
+                          {isAtStop && <span style={{...styles.badge, background: "#10b981", color: "black", fontWeight: "bold", border: "none"}}>BUS IS HERE</span>}
+                          {isReached && !isAtStop && <span style={{ color: "#10b981" }}>✓</span>}
+                        </div>
+
+                        <div style={{ display: "flex", gap: "8px", marginTop: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                          <span style={{
+                            ...styles.badge, 
+                            borderColor: isReached ? "#10b981" : "#3b82f6", 
+                            color: isReached ? "#10b981" : "#60a5fa", 
+                            background: isReached ? "rgba(16, 185, 129, 0.05)" : "rgba(59, 130, 246, 0.1)",
+                            opacity: (isReached && !isAtStop) ? 0.6 : 1
+                          }} title={isAtStop ? "Current Stop" : ""}>
+                            {isAtStop ? "Arrived" : isReached ? "Passed" : `~${eta.etaMin} min`}
+                          </span>
+                          {!isReached && (
+                            <>
+                              <span style={styles.statBox}>{eta.arrivalTime}</span>
+                              <span style={styles.statBox}>{eta.km} km</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              ))}
+                  </React.Fragment>
+                );
+              })}
             </div>
 
           </div>
