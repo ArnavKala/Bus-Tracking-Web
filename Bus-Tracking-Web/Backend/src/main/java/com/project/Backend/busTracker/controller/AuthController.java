@@ -6,12 +6,14 @@ import com.project.Backend.busTracker.model.StudentUser;
 import com.project.Backend.busTracker.repository.DriverUserRepository;
 import com.project.Backend.busTracker.repository.StudentUserRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
+@Slf4j
 public class AuthController {
 
     private final StudentUserRepository studentRepo;
@@ -19,12 +21,15 @@ public class AuthController {
 
     @PostMapping("/student/signup")
     public ResponseEntity<?> studentSignup(@RequestBody StudentSignupRequest request) {
+        log.info("Received signup request for email: {}", request.getEmail());
 
         if (studentRepo.findByEmail(request.getEmail()).isPresent()) {
+            log.warn("Signup failed: Email {} already exists", request.getEmail());
             return ResponseEntity.badRequest().body("Email already exists");
         }
 
         if (studentRepo.findByUsn(request.getUsn()).isPresent()) {
+            log.warn("Signup failed: USN {} already exists", request.getUsn());
             return ResponseEntity.badRequest().body("USN already exists");
         }
 
@@ -34,7 +39,13 @@ public class AuthController {
         student.setUsn(request.getUsn());
         student.setPassword(request.getPassword());
 
-        studentRepo.save(student);
+        try {
+            StudentUser savedStudent = studentRepo.save(student);
+            log.info("Successfully saved student with ID: {}", savedStudent.getId());
+        } catch (Exception e) {
+            log.error("Error saving student to database: {}", e.getMessage(), e);
+            return ResponseEntity.internalServerError().body("Database error: " + e.getMessage());
+        }
 
         return ResponseEntity.ok("Student registered successfully");
     }
